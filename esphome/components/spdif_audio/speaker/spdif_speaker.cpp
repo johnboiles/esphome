@@ -109,7 +109,41 @@ void SPDIFSpeaker::setup() {
   this->spdif_->setup();
   this->spdif_->set_block_complete_callback([this](uint32_t *data, size_t size, TickType_t ticks_to_wait) -> esp_err_t {
     size_t i2s_write_len;
-    return i2s_write(this->parent_->get_port(), data, size, &i2s_write_len, ticks_to_wait);
+
+    esp_err_t err = i2s_write(this->parent_->get_port(), data, size, &i2s_write_len, ticks_to_wait);
+    if (err != ESP_OK) {
+      ESP_LOGE(TAG, "I2S write failed: %s", esp_err_to_name(err));
+    }
+
+#if SPDIF_DEBUG
+    static uint64_t total_bytes = 0;
+    static uint64_t last_log_time = 0;
+    static uint64_t last_log_bytes = 0;
+
+    total_bytes += i2s_write_len;
+    int64_t current_time = esp_timer_get_time();
+
+    if (last_log_time == 0) {
+      last_log_time = current_time;
+      last_log_bytes = total_bytes;
+    }
+
+    // Check if it's time to log sample statistics (every minute)
+    if (current_time - last_log_time >= 5000000) {
+      uint64_t elapsed_time = current_time - last_log_time;
+      uint64_t bytes_since_last_log = total_bytes - last_log_bytes;
+      uint64_t samples = bytes_since_last_log / (EMULATED_BMC_BITS_PER_SAMPLE / 8);
+      float seconds = elapsed_time / 1000000.0f;
+      float hz = samples / seconds;
+
+      ESP_LOGD(TAG, "%llu samples in %.2fs (%.2fHz)", samples, seconds, hz);
+
+      // Reset for next log
+      last_log_time = current_time;
+      last_log_bytes = total_bytes;
+    }
+#endif
+    return err;
   });
 
 #if SPDIF_FILL_SILENCE
@@ -310,36 +344,6 @@ void SPDIFSpeaker::speaker_task(void *params) {
         }
 
         this_speaker->spdif_->write(this_speaker->data_buffer_, bytes_read, portMAX_DELAY);
-
-#if SPDIF_DEBUG
-        static uint64_t total_bytes = 0;
-        static uint64_t last_log_time = 0;
-        static uint64_t last_log_bytes = 0;
-
-        total_bytes += bytes_read;
-        int64_t current_time = esp_timer_get_time();
-
-        if (last_log_time == 0) {
-          last_log_time = current_time;
-          last_log_bytes = total_bytes;
-        }
-
-        // Check if it's time to log sample statistics (every minute)
-        if (current_time - last_log_time >= 5000000) {
-          uint64_t elapsed_time = current_time - last_log_time;
-          uint64_t bytes_since_last_log = total_bytes - last_log_bytes;
-          // 4 bytes per 16-bit stereo sample
-          uint64_t samples = bytes_since_last_log / 4;
-          float seconds = elapsed_time / 1000000.0f;
-          float hz = samples / seconds;
-
-          ESP_LOGD(TAG, "%llu samples in %.2fs (%.2fHz)", samples, seconds, hz);
-
-          // Reset for next log
-          last_log_time = current_time;
-          last_log_bytes = total_bytes;
-        }
-#endif
 
         tx_dma_underflow = false;
         last_data_received_time = millis();
