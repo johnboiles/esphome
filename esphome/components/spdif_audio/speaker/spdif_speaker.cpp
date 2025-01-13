@@ -28,6 +28,45 @@ static const char *const TAG = "spdif_audio.speaker";
 int16_t silence[SPDIF_BLOCK_SAMPLES * 2];
 #endif
 
+void SPDIFSpeaker::i2s_event_task(void *params) {
+  SPDIFSpeaker *this_speaker = (SPDIFSpeaker *) params;
+  i2s_event_t i2s_event;
+  int64_t last_error_log_time = 0;
+  int64_t last_overflow_log_time = 0;
+  // 1 second in microseconds
+  const int64_t min_log_interval_us = 1000000;
+
+  while (1) {
+    if (xQueueReceive(this_speaker->i2s_event_queue_, &i2s_event, portMAX_DELAY)) {
+      int64_t current_time = esp_timer_get_time();
+
+      if (i2s_event.type == I2S_EVENT_DMA_ERROR) {
+#if SPDIF_DEBUG
+        if (current_time - last_error_log_time >= min_log_interval_us) {
+          ESP_LOGE(TAG, "I2S_EVENT_DMA_ERROR");
+          last_error_log_time = current_time;
+        }
+#endif
+      } else if (i2s_event.type == I2S_EVENT_TX_Q_OVF) {
+        // I2S DMA sending queue overflowed, the oldest data has been overwritten
+        // by the new data in the DMA buffer
+#if SPDIF_DEBUG
+        if (current_time - last_overflow_log_time >= min_log_interval_us) {
+          ESP_LOGE(TAG, "I2S_EVENT_TX_Q_OVF");
+          last_overflow_log_time = current_time;
+        }
+#endif
+#if SPDIF_FILL_SILENCE
+        // Queue a SPDIF block full of silence when we don't have anything else to play
+        this_speaker->spdif_->reset();
+        this_speaker->spdif_->write(reinterpret_cast<uint8_t *>(silence), sizeof(silence), 0);
+#endif
+        this_speaker->tx_dma_underflow_ = true;
+      }
+    }
+  }
+}
+
 enum SpeakerEventGroupBits : uint32_t {
   COMMAND_START = (1 << 0),            // starts the speaker task
   COMMAND_STOP = (1 << 1),             // stops the speaker task
@@ -289,7 +328,7 @@ void SPDIFSpeaker::speaker_task(void *params) {
 
     bool stop_gracefully = false;
     uint32_t last_data_received_time = millis();
-    bool tx_dma_underflow = false;
+    this_speaker->tx_dma_underflow_ = false;
 
     while (!this_speaker->timeout_.has_value() ||
            (millis() - last_data_received_time) <= this_speaker->timeout_.value()) {
@@ -308,30 +347,6 @@ void SPDIFSpeaker::speaker_task(void *params) {
         break;
       }
 
-      i2s_event_t i2s_event;
-      while (xQueueReceive(this_speaker->i2s_event_queue_, &i2s_event, 0)) {
-        if (i2s_event.type == I2S_EVENT_TX_Q_OVF) {
-#if SPDIF_DEBUG
-          int64_t last_overflow_log_time = 0;
-          const int64_t min_log_interval_us = 1000000;
-          int64_t current_time = esp_timer_get_time();
-          if (current_time - last_overflow_log_time >= min_log_interval_us) {
-            ESP_LOGE(TAG, "I2S_EVENT_TX_Q_OVF");
-            last_overflow_log_time = current_time;
-          }
-#endif
-#if SPDIF_FILL_SILENCE
-          // Queue DMA a couple buffers full of silence when we don't have anything else to play
-          this_speaker->spdif_->reset();
-          this_speaker->spdif_->write(reinterpret_cast<uint8_t *>(silence), sizeof(silence), 0);
-          this_speaker->spdif_->write(reinterpret_cast<uint8_t *>(silence), sizeof(silence), 0);
-          // this_speaker->spdif_->write(reinterpret_cast<uint8_t *>(silence), sizeof(silence), 0);
-          // this_speaker->spdif_->write(reinterpret_cast<uint8_t *>(silence), sizeof(silence), 0);
-#endif
-          tx_dma_underflow = true;
-        }
-      }
-
       size_t bytes_to_read = dma_buffers_size;
 
       size_t bytes_read = this_speaker->audio_ring_buffer_->read((void *) this_speaker->data_buffer_, bytes_to_read,
@@ -345,11 +360,11 @@ void SPDIFSpeaker::speaker_task(void *params) {
 
         this_speaker->spdif_->write(this_speaker->data_buffer_, bytes_read, portMAX_DELAY);
 
-        tx_dma_underflow = false;
+        this_speaker->tx_dma_underflow_ = false;
         last_data_received_time = millis();
       } else {
         // No data received
-        if (stop_gracefully && tx_dma_underflow) {
+        if (stop_gracefully && this_speaker->tx_dma_underflow_) {
           break;
         }
       }
@@ -498,6 +513,10 @@ esp_err_t SPDIFSpeaker::start_i2s_driver_(audio::AudioStreamInfo &audio_stream_i
 
   esp_err_t err =
       i2s_driver_install(this->parent_->get_port(), &config, I2S_EVENT_QUEUE_COUNT, &this->i2s_event_queue_);
+
+  // Event taks runs in its own thread so it can fill the SPDIF block buffer with silence when the DMA underflows
+  xTaskCreate(i2s_event_task, "i2s_event_task", 3072, (void *) this, 10, NULL);
+
   if (err != ESP_OK) {
     // Failed to install the driver, so unlock the I2S port
     this->parent_->unlock();

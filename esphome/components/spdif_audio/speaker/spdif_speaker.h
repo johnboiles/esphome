@@ -63,6 +63,8 @@ class SPDIFSpeaker : public Parented<esphome::i2s_audio::I2SAudioComponent>, pub
   void set_mute_state(bool mute_state) override;
 
  protected:
+  static void i2s_event_task(void *params);
+
   /// @brief Function for the FreeRTOS task handling audio output.
   /// After receiving the COMMAND_START signal, allocates space for the buffers, starts the I2S driver, and reads
   /// audio from the ring buffer and writes audio to the I2S port. Stops immmiately after receiving the COMMAND_STOP
@@ -117,6 +119,7 @@ class SPDIFSpeaker : public Parented<esphome::i2s_audio::I2SAudioComponent>, pub
 
   uint32_t buffer_duration_ms_;
 
+  bool tx_dma_underflow_{false};
   optional<uint32_t> timeout_;
   uint8_t data_pin_;
   uint32_t sample_rate_;
