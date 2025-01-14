@@ -1,5 +1,7 @@
 #pragma once
 
+#ifdef USE_ESP32
+
 #include <cstdint>
 #include <functional>
 #include <freertos/FreeRTOS.h>
@@ -50,3 +52,5 @@ class SPDIF {
 
 }  // namespace spdif_audio
 }  // namespace esphome
+
+#endif

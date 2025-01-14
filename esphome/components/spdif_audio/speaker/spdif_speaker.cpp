@@ -31,14 +31,18 @@ int16_t silence[SPDIF_BLOCK_SAMPLES * 2];
 void SPDIFSpeaker::i2s_event_task(void *params) {
   SPDIFSpeaker *this_speaker = (SPDIFSpeaker *) params;
   i2s_event_t i2s_event;
+#if SPDIF_DEBUG
   int64_t last_error_log_time = 0;
   int64_t last_overflow_log_time = 0;
   // 1 second in microseconds
   const int64_t min_log_interval_us = 1000000;
+#endif
 
-  while (1) {
+  while (true) {
     if (xQueueReceive(this_speaker->i2s_event_queue_, &i2s_event, portMAX_DELAY)) {
+#if SPDIF_DEBUG
       int64_t current_time = esp_timer_get_time();
+#endif
 
       if (i2s_event.type == I2S_EVENT_DMA_ERROR) {
 #if SPDIF_DEBUG

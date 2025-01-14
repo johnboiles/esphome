@@ -1,5 +1,7 @@
 #include "spdif.h"
 
+#ifdef USE_ESP32
+
 #include "esphome/core/defines.h"
 #include "esphome/core/log.h"
 
@@ -88,3 +90,5 @@ esp_err_t SPDIF::write(const uint8_t *src, size_t size, TickType_t ticks_to_wait
 
 }  // namespace spdif_audio
 }  // namespace esphome
+
+#endif
